@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CAD Partner Pro - 20 Commands Edition</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        body { font-family: 'Consolas', monospace; display: flex; flex-direction: column; background-color: #1e1e1e; color: #eee; margin: 0; overflow: hidden; height: 100vh; }
+        .toolbar { background-color: #333; padding: 10px; display: flex; justify-content: center; gap: 8px; border-bottom: 2px solid #444; }
+        canvas { background-color: #000; display: block; flex-grow: 1; cursor: crosshair; }
+        .command-area { background-color: #252525; border-top: 2px solid #00ff00; padding: 10px 15px; display: flex; flex-direction: column; }
+        .history { font-size: 12px; color: #888; margin-bottom: 5px; height: 20px; overflow: hidden; }
+        .input-line { display: flex; align-items: center; gap: 10px; }
+        .command-label { color: #00ff00; font-weight: bold; }
+        #commandInput { background: transparent; border: none; color: white; flex-grow: 1; font-size: 16px; outline: none; }
+        .status-bar { padding: 5px 15px; background: #1a1a1a; font-size: 11px; color: #666; display: flex; justify-content: space-between; }
+        button { cursor: pointer; background: #444; color: white; border: 1px solid #555; padding: 5px 10px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<div class="toolbar">
+    <button onclick="executeCommand('LINE')">LINE</button>
+    <button onclick="executeCommand('CIRCLE')">CIRCLE</button>
+    <button onclick="executeCommand('RECT')">RECT</button>
+    <button onclick="executeCommand('UNDO')">UNDO</button>
+    <button onclick="exportPDF()" style="background: #c0392b;">PDF</button>
+</div>
+
+<canvas id="cadCanvas"></canvas>
+
+<div class="command-area">
+    <div class="history" id="cmdHistory">Systeem gereed. Typ een commando...</div>
+    <div class="input-line">
+        <span class="command-label">OPDRACHT:</span>
+        <input type="text" id="commandInput" autofocus spellcheck="false">
+    </div>
+</div>
+
+<div class="status-bar">
+    <span id="coordDisplay">X: 0, Y: 0</span>
+    <span id="zoomDisplay">ZOOM: 100%</span>
+    <span id="snapStatus">SNAP: AAN | GRID: AAN</span>
+</div>
+
+<script>
+    const { jsPDF } = window.jspdf;
+    const canvas = document.getElementById('cadCanvas');
+    const ctx = canvas.getContext('2d');
+    const commandInput = document.getElementById('commandInput');
+    const cmdHistory = document.getElementById('cmdHistory');
+
+    let shapes = [];
+    let drawing = false;
+    let tool = 'line';
+    let startX, startY, curX, curY;
+    let scale = 1, offsetX = 0, offsetY = 0;
+    let gridVisible = true;
+    let snapActive = true;
+    const GRID_SIZE = 50;
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight - 150;
+        redraw();
+    }
+    window.addEventListener('resize', resize);
+
+    // --- DE 20 COMMANDO'S LOGICA ---
+    commandInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            executeCommand(commandInput.value.toUpperCase().trim());
+            commandInput.value = '';
+        }
+    });
+
+    function executeCommand(input) {
+        const parts = input.split(' ');
+        const cmd = parts[0];
+        const val = parts[1];
+        
+        cmdHistory.innerText = "> " + input;
+
+        switch(cmd) {
+            case 'LINE': tool = 'line'; break;
+            case 'CIRCLE': tool = 'circle'; break;
+            case 'RECT': tool = 'rect'; break;
+            case 'TEXT': tool = 'text'; break;
+            case 'ERASE': shapes = []; break;
+            case 'UNDO': shapes.pop(); break;
+            case 'GRID': gridVisible = !gridVisible; break;
+            case 'SNAP': snapActive = !snapActive; break;
+            case 'REGEN': redraw(); break;
+            case 'LIMITS': resetView(); break;
+            case 'ZOOM': 
+                if(val === 'IN') scale *= 1.2; 
+                else if(val === 'OUT') scale /= 1.2;
+                else resetView();
+                break;
+            case 'PAN': log("Klik en sleep met rechtermuisknop om te pannen."); break;
+            case 'COLOR': if(val) ctx.strokeStyle = val; break;
+            case 'RED': changeColor('#ff0000'); break;
+            case 'BLUE': changeColor('#0000ff'); break;
+            case 'GREEN': changeColor('#00ff00'); break;
+            case 'CYAN': changeColor('#00ffff'); break;
+            case 'YELLOW': changeColor('#ffff00'); break;
+            case 'WHITE': changeColor('#ffffff'); break;
+            case 'EXPORT': exportPDF(); break;
+            default: cmdHistory.innerText = "Onbekend commando: " + cmd;
+        }
+        redraw();
+    }
+
+    function changeColor(hex) { document.getElementById('coordDisplay').style.color = hex; ctx.strokeStyle = hex; }
+
+    // --- TEKEN ENGINE ---
+    function redraw() {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.translate(offsetX, offsetY);
+        ctx.scale(scale, scale);
+
+        if(gridVisible) {
+            ctx.strokeStyle = "#222"; ctx.lineWidth = 1/scale;
+            for(let i=-2000; i<4000; i+=GRID_SIZE) {
+                ctx.beginPath(); ctx.moveTo(i, -2000); ctx.lineTo(i, 4000); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(-2000, i); ctx.lineTo(4000, i); ctx.stroke();
+            }
+        }
+
+        shapes.forEach(s => {
+            ctx.strokeStyle = s.color; ctx.lineWidth = 2/scale; ctx.beginPath();
+            if(s.type==='line') { ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); }
+            else if(s.type==='circle') { ctx.arc(s.x1, s.y1, s.r, 0, Math.PI*2); }
+            else if(s.type==='rect') { ctx.strokeRect(s.x1, s.y1, s.w, s.h); }
+            ctx.stroke();
+        });
+    }
+
+    // --- MUIS LOGICA ---
+    canvas.onmousedown = (e) => {
+        const world = { x: (e.clientX-offsetX)/scale, y: (e.clientY-offsetY)/scale };
+        startX = snapActive ? Math.round(world.x/GRID_SIZE)*GRID_SIZE : world.x;
+        startY = snapActive ? Math.round(world.y/GRID_SIZE)*GRID_SIZE : world.y;
+        drawing = true;
+    };
+
+    canvas.onmousemove = (e) => {
+        const world = { x: (e.clientX-offsetX)/scale, y: (e.clientY-offsetY)/scale };
+        curX = snapActive ? Math.round(world.x/GRID_SIZE)*GRID_SIZE : world.x;
+        curY = snapActive ? Math.round(world.y/GRID_SIZE)*GRID_SIZE : world.y;
+        
+        document.getElementById('coordDisplay').innerText = `X: ${Math.round(curX)}, Y: ${Math.round(curY)}`;
+        if(drawing) redraw();
+    };
+
+    canvas.onmouseup = () => {
+        if(!drawing) return;
+        let shape = { type: tool, x1: startX, y1: startY, color: ctx.strokeStyle };
+        if(tool==='line') { shape.x2 = curX; shape.y2 = curY; }
+        else if(tool==='circle') { shape.r = Math.sqrt((curX-startX)**2 + (curY-startY)**2); }
+        else if(tool==='rect') { shape.w = curX - startX; shape.h = curY - startY; }
+        shapes.push(shape);
+        drawing = false;
+        redraw();
+    };
+
+    function resetView() { scale = 1; offsetX = 0; offsetY = 0; redraw(); }
+    function exportPDF() {
+        const pdf = new jsPDF('l', 'px', [canvas.width, canvas.height]);
+        pdf.addImage(canvas.toDataURL("image/png"), 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save("cad_export.pdf");
+    }
+
+    resize();
+</script>
+</body>
+</html>
